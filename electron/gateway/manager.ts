@@ -10,11 +10,11 @@ import { existsSync } from 'fs';
 import WebSocket from 'ws';
 import { PORTS } from '../utils/config';
 import { 
-  getOpenClawDir, 
+  getOpenClawDir,
+  getOpenClawConfigDir,
   getOpenClawEntryPath, 
   isOpenClawBuilt, 
-  isOpenClawPresent,
-  quoteForCmd,
+  isOpenClawPresent 
 } from '../utils/paths';
 import { getSetting } from '../utils/store';
 import { getApiKey, getDefaultProvider, getProvider } from '../utils/secure-storage';
@@ -30,8 +30,18 @@ import {
   buildDeviceAuthPayload,
   type DeviceIdentity,
 } from '../utils/device-identity';
-import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw } from '../utils/openclaw-auth';
-
+import { syncGatewayTokenToConfig } from '../utils/openclaw-auth';
+import { createConfigBackup, restoreConfig, restoreConfigWithValidation, getLatestBackup, recordAutoRollback } from '../utils/config-guardian';
+import { 
+  logGatewayError, 
+  updateRecoveryStatus,
+  recordGatewayFailure,
+  recordGatewaySuccess,
+  recordAutoRollback,
+  checkPreviousIssues,
+  clearConfigGuardianStatus
+} from '../utils/error-logger';
+import fs from 'fs';
 /**
  * Gateway connection status
  */
@@ -196,6 +206,77 @@ export class GatewayManager extends EventEmitter {
    * Start Gateway process
    */
   async start(): Promise<void> {
+    // === CONFIG GUARDIAN: Check for previous issues ===
+    const previousIssues = checkPreviousIssues();
+    if (previousIssues.hadError && previousIssues.wasRecovered) {
+      console.log(`[ConfigGuardian] Previous issue detected and recovered! Error: ${previousIssues.errorMessage}, Recovery: ${previousIssues.recoveryType}, Backup: ${previousIssues.backupUsed}`);
+      
+      // Create error log entry for rollback history
+      const userConfigPath = path.join(getOpenClawConfigDir(), 'openclaw.json');
+      const configContent = fs.existsSync(userConfigPath) ? fs.readFileSync(userConfigPath, 'utf-8') : '';
+      const errorLog = logGatewayError(previousIssues.errorMessage || 'Unknown error', configContent, previousIssues.backupUsed || undefined);
+      updateRecoveryStatus(errorLog.id, 'auto-rollback', previousIssues.backupUsed || undefined);
+      
+      this.emit('config-rollback-recovered', {
+        errorMessage: previousIssues.errorMessage,
+        errorTime: previousIssues.errorTime,
+        recoveryType: previousIssues.recoveryType,
+        recoveryTime: previousIssues.recoveryTime,
+        backupUsed: previousIssues.backupUsed,
+        errorLogId: errorLog.id
+      });
+    }
+    
+    // === CONFIG GUARDIAN: Validate and backup user config ===
+    const userConfigPath = path.join(getOpenClawConfigDir(), 'openclaw.json');
+    if (fs.existsSync(userConfigPath)) {
+      try {
+        const configContent = fs.readFileSync(userConfigPath, 'utf-8');
+        JSON.parse(configContent); // Basic JSON validation
+        
+        // Config is valid - now backup
+        await createConfigBackup();
+        console.log('[ConfigGuardian] User config validation passed, backup created');
+        logger.info('[ConfigGuardian] User config validation passed, backup created');
+      } catch (error) {
+        // User config is invalid! Try to restore from backup with validation
+        console.error(`[ConfigGuardian] User config is invalid: ${error}. Attempting auto-rollback...`);
+        logger.error(`[ConfigGuardian] User config is invalid: ${error}. Attempting auto-rollback...`);
+        
+        const restoreResult = await restoreConfigWithValidation(5);
+        if (restoreResult.success && restoreResult.backupUsed) {
+          // Record rollback with invalid backup info
+          recordAutoRollback(restoreResult.backupUsed, `pre-start-${Date.now()}`, restoreResult.invalidBackups);
+          console.log(`[ConfigGuardian] Auto-rollback successful from: ${restoreResult.backupUsed}`);
+          logger.info(`[ConfigGuardian] Auto-rollback successful from: ${restoreResult.backupUsed}`);
+          
+          // Log invalid backups if any
+          if (restoreResult.invalidBackups.length > 0) {
+            console.warn(`[ConfigGuardian] Invalid backups skipped:`, restoreResult.invalidBackups);
+            logger.warn(`[ConfigGuardian] Invalid backups skipped:`, restoreResult.invalidBackups);
+          }
+          
+          // Notify user about rollback
+          this.emit('config-rollback', {
+            backup: restoreResult.backupUsed,
+            errorId: `pre-start-${Date.now()}`,
+            error: String(error),
+            invalidBackups: restoreResult.invalidBackups
+          });
+        } else {
+          console.error('[ConfigGuardian] All backups failed validation, could not restore');
+          logger.error('[ConfigGuardian] All backups failed validation, could not restore');
+        }
+        
+        // Continue anyway - Gateway uses bundled config
+        console.log('[ConfigGuardian] Continuing with bundled config...');
+        logger.info('[ConfigGuardian] Continuing with bundled config...');
+      }
+    } else {
+      // No user config - backup bundled config
+      await createConfigBackup();
+    }
+    
     if (this.startLock) {
       logger.debug('Gateway start ignored because a start flow is already in progress');
       return;
@@ -241,6 +322,8 @@ export class GatewayManager extends EventEmitter {
       const existing = await this.findExistingGateway();
       if (existing) {
         logger.debug(`Found existing Gateway on port ${existing.port}`);
+        
+        // Connect to existing Gateway (no config validation needed)
         await this.connect(existing.port, existing.externalToken);
         this.ownsProcess = false;
         this.setStatus({ pid: undefined });
@@ -249,6 +332,12 @@ export class GatewayManager extends EventEmitter {
       }
       
       logger.debug('No existing Gateway found, starting new process...');
+      
+      // === CONFIG GUARDIAN: Create backup before Gateway start ===
+      const backup = await createConfigBackup();
+      if (backup) {
+        console.log(`[ConfigGuardian] Backup created before Gateway start: ${backup.filename}`);
+      }
       
       // Start new Gateway process
       await this.startProcess();
@@ -263,7 +352,46 @@ export class GatewayManager extends EventEmitter {
       this.startHealthCheck();
       logger.debug('Gateway started successfully');
       
+      // === CONFIG GUARDIAN: Record successful start ===
+      recordGatewaySuccess();
+      
     } catch (error) {
+      // === CONFIG GUARDIAN: Log error and record failure ===
+      recordGatewayFailure(String(error));
+      console.error(`[ConfigGuardian] Gateway start failed, attempting auto-rollback...`);
+      
+      // Log the error
+      const configPath = getOpenClawConfigDir();
+      const configContent = fs.existsSync(path.join(configPath, 'openclaw.json'))
+        ? fs.readFileSync(path.join(configPath, 'openclaw.json'), 'utf-8')
+        : '';
+      
+      const latestBackup = getLatestBackup();
+      const errorLog = logGatewayError(error, configContent, latestBackup?.filename);
+      
+      // Attempt auto-rollback with validation
+      const restoreResult = await restoreConfigWithValidation(5);
+      if (restoreResult.success && restoreResult.backupUsed) {
+        updateRecoveryStatus(errorLog.id, 'auto-rollback', restoreResult.backupUsed);
+        recordAutoRollback(restoreResult.backupUsed, errorLog.id, restoreResult.invalidBackups);
+        console.log(`[ConfigGuardian] Auto-rollback successful from: ${restoreResult.backupUsed}`);
+        
+        // Log invalid backups if any
+        if (restoreResult.invalidBackups.length > 0) {
+          console.warn(`[ConfigGuardian] Invalid backups skipped:`, restoreResult.invalidBackups);
+        }
+        
+        // Notify user about rollback
+        this.emit('config-rollback', {
+          backup: restoreResult.backupUsed,
+          errorId: errorLog.id,
+          error: String(error),
+          invalidBackups: restoreResult.invalidBackups
+        });
+      } else {
+        console.error('[ConfigGuardian] All backups failed validation, could not restore');
+      }
+      
       logger.error(
         `Gateway start failed (port=${this.status.port}, reconnectAttempts=${this.reconnectAttempts}, spawn=${this.lastSpawnSummary ?? 'n/a'})`,
         error
@@ -445,6 +573,20 @@ export class GatewayManager extends EventEmitter {
         return;
       }
       
+      // === CONFIG GUARDIAN: Validate config on each health check ===
+      const userConfigPath = path.join(getOpenClawConfigDir(), 'openclaw.json');
+      if (fs.existsSync(userConfigPath)) {
+        try {
+          const configContent = fs.readFileSync(userConfigPath, 'utf-8');
+          JSON.parse(configContent); // Config still valid
+        } catch (error) {
+          // Config became invalid! Trigger rollback
+          await this.performConfigRollback(error);
+          return;
+        }
+      }
+      
+      // Check Gateway health via WebSocket ping
       try {
         const health = await this.checkHealth();
         if (!health.ok) {
@@ -455,6 +597,41 @@ export class GatewayManager extends EventEmitter {
         logger.error('Gateway health check error:', error);
       }
     }, 30000); // Check every 30 seconds
+  }
+  
+  /**
+   * Perform config rollback (common logic)
+   */
+  private async performConfigRollback(error: any): Promise<void> {
+    console.error(`[ConfigGuardian] User config became invalid: ${error}. Attempting auto-rollback...`);
+    logger.error(`[ConfigGuardian] User config became invalid: ${error}. Attempting auto-rollback...`);
+    
+    // Record the failure
+    recordGatewayFailure(String(error));
+    
+    // Try to restore from backup with validation
+    const restoreResult = await restoreConfigWithValidation(5);
+    if (restoreResult.success && restoreResult.backupUsed) {
+      recordAutoRollback(restoreResult.backupUsed, `healthcheck-${Date.now()}`, restoreResult.invalidBackups);
+      console.log(`[ConfigGuardian] Auto-rollback successful from: ${restoreResult.backupUsed}`);
+      logger.info(`[ConfigGuardian] Auto-rollback successful from: ${restoreResult.backupUsed}`);
+      
+      // Log invalid backups if any
+      if (restoreResult.invalidBackups.length > 0) {
+        console.warn(`[ConfigGuardian] Invalid backups skipped:`, restoreResult.invalidBackups);
+        logger.warn(`[ConfigGuardian] Invalid backups skipped:`, restoreResult.invalidBackups);
+      }
+      
+      this.emit('config-rollback', {
+        backup: restoreResult.backupUsed,
+        errorId: `healthcheck-${Date.now()}`,
+        error: String(error),
+        invalidBackups: restoreResult.invalidBackups
+      });
+    } else {
+      console.error('[ConfigGuardian] All backups failed validation, could not restore');
+      logger.error('[ConfigGuardian] All backups failed validation, could not restore');
+    }
   }
   
   /**
@@ -475,63 +652,6 @@ export class GatewayManager extends EventEmitter {
     }
   }
   
-  /**
-   * Unload the system-managed openclaw gateway launchctl service if it is
-   * loaded.  Without this, killing the process only causes launchctl to
-   * respawn it, leading to an infinite reconnect loop.
-   */
-  private async unloadLaunchctlService(): Promise<void> {
-    if (process.platform !== 'darwin') return;
-
-    try {
-      const uid = process.getuid?.();
-      if (uid === undefined) return;
-
-      const LAUNCHD_LABEL = 'ai.openclaw.gateway';
-      const serviceTarget = `gui/${uid}/${LAUNCHD_LABEL}`;
-
-      const loaded = await new Promise<boolean>((resolve) => {
-        import('child_process').then(cp => {
-          cp.exec(`launchctl print ${serviceTarget}`, { timeout: 5000 }, (err) => {
-            resolve(!err);
-          });
-        }).catch(() => resolve(false));
-      });
-
-      if (!loaded) return;
-
-      logger.info(`Unloading launchctl service ${serviceTarget} to prevent auto-respawn`);
-      await new Promise<void>((resolve) => {
-        import('child_process').then(cp => {
-          cp.exec(`launchctl bootout ${serviceTarget}`, { timeout: 10000 }, (err) => {
-            if (err) {
-              logger.warn(`Failed to bootout launchctl service: ${err.message}`);
-            } else {
-              logger.info('Successfully unloaded launchctl gateway service');
-            }
-            resolve();
-          });
-        }).catch(() => resolve());
-      });
-
-      await new Promise(r => setTimeout(r, 2000));
-
-      // Remove the plist so the service won't reload on next login.
-      try {
-        const { homedir } = await import('os');
-        const plistPath = path.join(homedir(), 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
-        const { access, unlink } = await import('fs/promises');
-        await access(plistPath);
-        await unlink(plistPath);
-        logger.info(`Removed legacy launchd plist to prevent reload on next login: ${plistPath}`);
-      } catch {
-        // File doesn't exist or can't be removed -- not fatal
-      }
-    } catch (err) {
-      logger.warn('Error while unloading launchctl gateway service:', err);
-    }
-  }
-
   /**
    * Find existing Gateway process by attempting a WebSocket connection
    */
@@ -557,11 +677,6 @@ export class GatewayManager extends EventEmitter {
           if (pids.length > 0) {
             if (!this.process || !pids.includes(String(this.process.pid))) {
                logger.info(`Found orphaned process listening on port ${port} (PIDs: ${pids.join(', ')}), attempting to kill...`);
-
-               // Unload the launchctl service first so macOS doesn't auto-
-               // respawn the process we're about to kill.
-               await this.unloadLaunchctlService();
-
                // SIGTERM first so the gateway can clean up its lock file.
                for (const pid of pids) {
                  try { process.kill(parseInt(pid), 'SIGTERM'); } catch { /* ignore */ }
@@ -611,9 +726,6 @@ export class GatewayManager extends EventEmitter {
    * Uses OpenClaw npm package from node_modules (dev) or resources (production)
    */
   private async startProcess(): Promise<void> {
-    // Ensure no system-managed gateway service will compete with our process.
-    await this.unloadLaunchctlService();
-
     const openclawDir = getOpenClawDir();
     const entryScript = getOpenClawEntryPath();
     
@@ -636,12 +748,6 @@ export class GatewayManager extends EventEmitter {
       syncGatewayTokenToConfig(gatewayToken);
     } catch (err) {
       logger.warn('Failed to sync gateway token to openclaw.json:', err);
-    }
-
-    try {
-      syncBrowserConfigToOpenClaw();
-    } catch (err) {
-      logger.warn('Failed to sync browser config to openclaw.json:', err);
     }
     
     let command: string;
@@ -762,15 +868,11 @@ export class GatewayManager extends EventEmitter {
         }
       }
 
-      const useShell = !app.isPackaged && process.platform === 'win32';
-      const spawnCmd = useShell ? quoteForCmd(command) : command;
-      const spawnArgs = useShell ? args.map(a => quoteForCmd(a)) : args;
-
-      this.process = spawn(spawnCmd, spawnArgs, {
+      this.process = spawn(command, args, {
         cwd: openclawDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
-        shell: useShell,
+        shell: !app.isPackaged && process.platform === 'win32', // shell only in dev on Windows
         env: spawnEnv,
       });
       const child = this.process;
@@ -812,6 +914,10 @@ export class GatewayManager extends EventEmitter {
             logger.debug(`[Gateway stderr] ${classified.normalized}`);
             continue;
           }
+          logger.warn(`[Gateway stderr] ${classified.normalized}`);
+          
+          // === CONFIG GUARDIAN: Detect config errors from stderr ===
+          // Log stderr messages
           logger.warn(`[Gateway stderr] ${classified.normalized}`);
         }
       });
@@ -1152,6 +1258,7 @@ export class GatewayManager extends EventEmitter {
       return;
     }
     
+    // Emit generic message for other handlers
     this.emit('message', message);
   }
   
@@ -1159,34 +1266,19 @@ export class GatewayManager extends EventEmitter {
    * Handle OpenClaw protocol events
    */
   private handleProtocolEvent(event: string, payload: unknown): void {
+    // Map OpenClaw events to our internal event types
     switch (event) {
       case 'tick':
+        // Heartbeat tick, ignore
         break;
       case 'chat':
         this.emit('chat:message', { message: payload });
         break;
-      case 'agent': {
-        // Agent events may carry chat streaming data inside payload.data,
-        // or be lifecycle events (phase=started/completed) with no message.
-        const p = payload as Record<string, unknown>;
-        const data = (p.data && typeof p.data === 'object') ? p.data as Record<string, unknown> : {};
-        const chatEvent: Record<string, unknown> = {
-          ...data,
-          runId: p.runId ?? data.runId,
-          sessionKey: p.sessionKey ?? data.sessionKey,
-          state: p.state ?? data.state,
-          message: p.message ?? data.message,
-        };
-        if (chatEvent.state || chatEvent.message) {
-          this.emit('chat:message', { message: chatEvent });
-        }
-        this.emit('notification', { method: event, params: payload });
-        break;
-      }
       case 'channel.status':
         this.emit('channel:status', payload as { channelId: string; status: string });
         break;
       default:
+        // Forward unknown events as generic notifications
         this.emit('notification', { method: event, params: payload });
     }
   }

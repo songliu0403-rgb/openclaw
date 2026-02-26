@@ -389,6 +389,48 @@ function registerLogHandlers(): void {
   ipcMain.handle('log:listFiles', async () => {
     return logger.listLogFiles();
   });
+
+  // Get rollback history (ConfigGuardian)
+  ipcMain.handle('log:getRollbackHistory', async () => {
+    const { getRollbackHistory } = await import('../utils/config-guardian');
+    return getRollbackHistory();
+  });
+
+  // Get custom backup path (ConfigGuardian)
+  ipcMain.handle('log:getBackupPath', async () => {
+    const { getCustomBackupPath } = await import('../utils/config-guardian');
+    return getCustomBackupPath();
+  });
+
+  // Get default backup path (ConfigGuardian)
+  ipcMain.handle('log:getDefaultBackupPath', async () => {
+    const { getDefaultBackupPath } = await import('../utils/config-guardian');
+    return getDefaultBackupPath();
+  });
+
+  // Set custom backup path (ConfigGuardian)
+  ipcMain.handle('log:setBackupPath', async (_, path: string) => {
+    const { setCustomBackupPath } = await import('../utils/config-guardian');
+    return setCustomBackupPath(path);
+  });
+
+  // Get all error and rollback events (ConfigGuardian)
+  ipcMain.handle('log:getAllErrorLogs', async () => {
+    const { getAllErrorLogs } = await import('../utils/config-guardian');
+    return getAllErrorLogs();
+  });
+
+  // Get all backup files list (ConfigGuardian)
+  ipcMain.handle('log:getBackupList', async () => {
+    const { getAllBackups } = await import('../utils/config-guardian');
+    return getAllBackups();
+  });
+
+  // Restore from specific backup (ConfigGuardian)
+  ipcMain.handle('log:restoreFromBackup', async (_, backupFilename: string) => {
+    const { restoreFromSpecificBackup } = await import('../utils/config-guardian');
+    return restoreFromSpecificBackup(backupFilename);
+  });
 }
 
 /**
@@ -571,6 +613,13 @@ function registerGatewayHandlers(
   gatewayManager.on('notification', (notification) => {
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send('gateway:notification', notification);
+    }
+  });
+
+  // ConfigGuardian rollback notification
+  gatewayManager.on('config-rollback', (data) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('gateway:config-rollback', data);
     }
   });
 

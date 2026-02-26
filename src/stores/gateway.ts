@@ -168,6 +168,13 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
           }
         });
 
+        // Listen for config-rollback notifications from ConfigGuardian
+        window.electron.ipcRenderer.on('gateway:config-rollback', (data) => {
+          console.warn('[ConfigGuardian] Config rollback notification:', data);
+          // You could show a toast notification here
+          // For now, we just log it
+        });
+
       } catch (error) {
         console.error('Failed to initialize Gateway:', error);
         set({ lastError: String(error) });

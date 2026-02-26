@@ -5,6 +5,7 @@
         "skills": "技能",
         "channels": "频道",
         "dashboard": "仪表盘",
+        "logs": "备份与恢复",
         "settings": "设置",
         "devConsole": "开发者控制台"
     },

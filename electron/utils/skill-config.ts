@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { createConfigBackup } from './config-guardian';
 
 const OPENCLAW_CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json');
 
@@ -45,6 +46,8 @@ function readConfig(): OpenClawConfig {
 function writeConfig(config: OpenClawConfig): void {
     const json = JSON.stringify(config, null, 2);
     writeFileSync(OPENCLAW_CONFIG_PATH, json, 'utf-8');
+    // Note: Backup will happen on next Gateway start
+    // No need to backup here - OpenClaw will validate config on restart
 }
 
 /**

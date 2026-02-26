@@ -24,5 +24,21 @@
     "activeSkills": "Active Skills",
     "noSkills": "No skills enabled",
     "enableSome": "Enable some skills",
-    "more": "+{{count}} more"
+    "more": "+{{count}} more",
+    "logs": "Backup & Restore",
+    "logsDescription": "Gateway logs, rollback history and backup records",
+    "openFolder": "Open Folder",
+    "refresh": "Refresh",
+    "total": "Total",
+    "recentLogs": "Recent Logs",
+    "rollbackLogs": "Rollback Logs",
+    "allLevels": "All Levels",
+    "searchLogs": "Search logs...",
+    "logEntries": "Log Entries",
+    "showingLogs": "Showing {{count}} logs",
+    "noLogs": "No logs available",
+    "logDetail": "Log Detail",
+    "level": "Level",
+    "message": "Message",
+    "rawData": "Raw Data"
 }

@@ -118,6 +118,13 @@ const electronAPI = {
         'log:getFilePath',
         'log:getDir',
         'log:listFiles',
+        'log:getRollbackHistory',
+        'log:getAllErrorLogs',
+        'log:getBackupPath',
+        'log:getDefaultBackupPath',
+        'log:setBackupPath',
+        'log:getBackupList',
+        'log:restoreFromBackup',
         // File staging & media
         'file:stage',
         'file:stageBuffer',

@@ -16,6 +16,7 @@ import { Skills } from './pages/Skills';
 import { Cron } from './pages/Cron';
 import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
+import { Logs } from './pages/Logs';
 import { useSettingsStore } from './stores/settings';
 import { useGatewayStore } from './stores/gateway';
 
@@ -155,6 +156,7 @@ function App() {
           <Route element={<MainLayout />}>
             <Route path="/" element={<Chat />} />
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/logs" element={<Logs />} />
             <Route path="/channels" element={<Channels />} />
             <Route path="/skills" element={<Skills />} />
             <Route path="/cron" element={<Cron />} />

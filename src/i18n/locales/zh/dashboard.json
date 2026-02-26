@@ -24,5 +24,21 @@
     "activeSkills": "已启用技能",
     "noSkills": "未启用技能",
     "enableSome": "启用一些技能",
-    "more": "+{{count}} 更多"
+    "more": "+{{count}} 更多",
+    "logs": "备份与恢复",
+    "logsDescription": "网关运行日志、回滚历史与备份记录",
+    "openFolder": "打开文件夹",
+    "refresh": "刷新",
+    "total": "总计",
+    "recentLogs": "最近日志",
+    "rollbackLogs": "回滚日志",
+    "allLevels": "全部级别",
+    "searchLogs": "搜索日志...",
+    "logEntries": "日志条目",
+    "showingLogs": "显示 {{count}} 条日志",
+    "noLogs": "暂无日志",
+    "logDetail": "日志详情",
+    "level": "级别",
+    "message": "消息",
+    "rawData": "原始数据"
 }

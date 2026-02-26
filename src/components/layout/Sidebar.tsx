@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Terminal,
   ExternalLink,
+  FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
@@ -90,6 +91,7 @@ export function Sidebar() {
     { to: '/skills', icon: <Puzzle className="h-5 w-5" />, label: t('sidebar.skills') },
     { to: '/channels', icon: <Radio className="h-5 w-5" />, label: t('sidebar.channels') },
     { to: '/dashboard', icon: <Home className="h-5 w-5" />, label: t('sidebar.dashboard') },
+    { to: '/logs', icon: <FileText className="h-5 w-5" />, label: t('sidebar.logs') },
     { to: '/settings', icon: <Settings className="h-5 w-5" />, label: t('sidebar.settings') },
   ];
 

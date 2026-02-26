@@ -5,10 +5,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { getOpenClawResolvedDir } from './paths';
+import { getOpenClawConfigDir, getOpenClawResolvedDir } from './paths';
 import * as logger from './logger';
+import { createConfigBackup } from './config-guardian';
 
-const OPENCLAW_DIR = join(homedir(), '.openclaw');
+// Use the same config dir logic as ConfigGuardian
+const OPENCLAW_DIR = getOpenClawConfigDir();
 const CONFIG_FILE = join(OPENCLAW_DIR, 'openclaw.json');
 
 // Channels that are managed as plugins (config goes under plugins.entries, not channels)
@@ -67,6 +69,8 @@ export function writeOpenClawConfig(config: OpenClawConfig): void {
 
     try {
         writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+        // Note: Backup will happen on next Gateway start
+        // No need to backup here - OpenClaw will validate config on restart
     } catch (error) {
         logger.error('Failed to write OpenClaw config', error);
         console.error('Failed to write OpenClaw config:', error);

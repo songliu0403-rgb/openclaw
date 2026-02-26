@@ -22,8 +22,17 @@ export function expandPath(path: string): string {
 
 /**
  * Get OpenClaw config directory
+ * Uses Z:\Local\Users\<user>\.openclaw for development
  */
 export function getOpenClawConfigDir(): string {
+  // Check if we're in development mode (Z: drive exists)
+  if (process.platform === 'win32') {
+    const zDrivePath = 'Z:\\Local\\Users\\songl\\.openclaw';
+    if (existsSync(zDrivePath)) {
+      return zDrivePath;
+    }
+  }
+  // Fallback to default user directory
   return join(homedir(), '.openclaw');
 }
 
